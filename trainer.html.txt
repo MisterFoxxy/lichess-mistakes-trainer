@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Lichess Mistakes Trainer</title>
+
+  <!-- Chessboard.js -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/www/css/chessboard-1.0.0.min.css">
+  <style>
+    body { font-family: system-ui, -apple-system, Segoe UI, Roboto, Arial, sans-serif; margin: 16px; }
+    .row { display: flex; gap: 16px; flex-wrap: wrap; }
+    .card { border: 1px solid #e5e7eb; border-radius: 12px; padding: 12px; }
+    .left { width: 360px; }
+    .right { flex: 1; min-width: 320px; }
+    #board { width: 340px; }
+    .controls { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 10px; }
+    button { padding: 8px 10px; border-radius: 10px; border: 1px solid #d1d5db; background: #fff; cursor: pointer; }
+    button:hover { background: #f9fafb; }
+    input { padding: 8px 10px; border-radius: 10px; border: 1px solid #d1d5db; width: 180px; }
+    select { padding: 8px 10px; border-radius: 10px; border: 1px solid #d1d5db; }
+    .muted { color: #6b7280; font-size: 13px; }
+    .list { margin-top: 10px; max-height: 520px; overflow: auto; }
+    .item { padding: 10px; border: 1px solid #e5e7eb; border-radius: 10px; margin-bottom: 8px; cursor: pointer; }
+    .item:hover { background: #f9fafb; }
+    .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid #e5e7eb; font-size: 12px; margin-left: 6px; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace; }
+    .status { margin-top: 8px; }
+    .ok { color: #065f46; }
+    .bad { color: #991b1b; }
+    .topbar { display:flex; gap:10px; align-items:center; flex-wrap: wrap; margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+  <div class="topbar card">
+    <div>
+      <div class="muted">API</div>
+      <input id="apiBase" value="http://localhost:8000" />
+    </div>
+    <div>
+      <div class="muted">Lichess username</div>
+      <input id="username" value="MidFoxxy" />
+    </div>
+    <div>
+      <div class="muted">max_games</div>
+      <select id="maxGames">
+        <option>10</option>
+        <option selected>20</option>
+        <option>30</option>
+      </select>
+    </div>
+    <div>
+      <div class="muted">depth</div>
+      <select id="depth">
+        <option>10</option>
+        <option selected>14</option>
+        <option>16</option>
+      </select>
+    </div>
+    <div>
+      <div class="muted">max_mistakes</div>
+      <select id="maxMistakes">
+        <option>5</option>
+        <option selected>10</option>
+        <option>15</option>
+      </select>
+    </div>
+    <div>
+      <div class="muted">skip_first_plies</div>
+      <select id="skipPlies">
+        <option>0</option>
+        <option selected>8</option>
+        <option>12</option>
+      </select>
+    </div>
+    <div style="margin-top:18px;">
+      <button id="loadBtn">Загрузить ошибки</button>
+    </div>
+    <div id="loadStatus" class="muted" style="margin-top:18px;"></div>
+  </div>
+
+  <div class="row">
+    <div class="left card">
+      <div id="board"></div>
+
+      <div class="controls">
+        <button id="resetBtn">Сброс</button>
+        <button id="showBestBtn">Показать лучший ход</button>
+        <button id="playMyBtn">Сыграть мой ход из партии</button>
+      </div>
+
+      <div class="status">
+        <div id="posInfo" class="muted"></div>
+        <div id="hint" class="muted"></div>
+        <div id="result" class="muted"></div>
+      </div>
+    </div>
+
+    <div class="right card">
+      <div style="display:flex; justify-content:space-between; align-items:center; gap:10px; flex-wrap:wrap;">
+        <div>
+          <div><b>Список ошибок</b> <span id="count" class="muted"></span></div>
+          <div class="muted">Кликни ошибку → откроется позиция до ошибки.</div>
+        </div>
+        <div class="muted">Подсказка: best_uci — это ход, который надо найти.</div>
+      </div>
+
+      <div id="list" class="list"></div>
+    </div>
+  </div>
+
+  <!-- libs -->
+  <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chess.js@1.0.0/chess.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chessboardjs@1.0.0/www/js/chessboard-1.0.0.min.js"></script>
+
+  <script>
+    let boardUI = null;
+    let chess = new Chess();
+    let current = null; // current mistake item
+
+    function uciToMove(uci) {
+      if (!uci || uci.length < 4) return null;
+      const from = uci.slice(0,2);
+      const to = uci.slice(2,4);
+      const promo = uci.length >= 5 ? uci.slice(4,5) : undefined;
+      return { from, to, promotion: promo };
+    }
+
+    function setPositionFromFEN(fen) {
+      chess.load(fen);
+      boardUI.position(chess.fen());
+      // ориентируем доску по стороне хода
+      const turn = chess.turn() === 'w' ? 'white' : 'black';
+      boardUI.orientation(turn);
+    }
+
+    function renderHint(item) {
+      const hintEl = document.getElementById('hint');
+      if (!item) { hintEl.textContent = ""; return; }
+
+      const parts = [];
+      parts.push(`Твой цвет: ${item.color}. Ход №${item.move_number}.`);
+      parts.push(`Уровень: ${item.label}, drop ${item.drop_cp} cp.`);
+
+      if (item.before_is_mate) {
+        parts.push(`До хода был МАТ в ${item.before_mate_in}.`);
+      }
+      if (item.after_is_mate) {
+        parts.push(`После хода стал МАТ в ${item.after_mate_in}.`);
+      }
+      hintEl.textContent = parts.join(" ");
+    }
+
+    function renderResult(text, ok=false) {
+      const el = document.getElementById('result');
+      el.textContent = text || "";
+      el.className = ok ? "ok" : "bad";
+    }
+
+    function clearResult() {
+      const el = document.getElementById('result');
+      el.textContent = "";
+      el.className = "muted";
+    }
+
+    function selectMistake(item) {
+      current = item;
+      clearResult();
+      setPositionFromFEN(item.fen_before);
+
+      document.getElementById('posInfo').innerHTML =
+        `<div class="muted">Позиция до ошибки: <span class="mono">${item.fen_before}</span></div>
+         <div class="muted">Лучший ход: <span class="mono">${item.best_uci}</span> · Твой ход в партии: <span class="mono">${item.played_uci}</span></div>
+         <div class="muted">Партия: <a href="${item.site}" target="_blank" rel="noreferrer">${item.game_id}</a></div>`;
+
+      renderHint(item);
+    }
+
+    async function loadMistakes() {
+      const apiBase = document.getElementById('apiBase').value.trim();
+      const username = document.getElementById('username').value.trim();
+      const maxGames = document.getElementById('maxGames').value;
+      const depth = document.getElementById('depth').value;
+      const maxMistakes = document.getElementById('maxMistakes').value;
+      const skipPlies = document.getElementById('skipPlies').value;
+
+      const status = document.getElementById('loadStatus');
+      status.textContent = "Загружаю...";
+      status.className = "muted";
+
+      const url = `${apiBase}/analyze_games/${encodeURIComponent(username)}?max_games=${maxGames}&depth=${depth}&max_mistakes=${maxMistakes}&skip_first_plies=${skipPlies}`;
+
+      const res = await fetch(url, { method: "POST" });
+      const data = await res.json();
+
+      if (!res.ok) {
+        status.textContent = `Ошибка: ${data.detail || res.status}`;
+        status.className = "bad";
+        return;
+      }
+
+      const items = data.mistakes || [];
+      document.getElementById('count').textContent = `(${items.length})`;
+      status.textContent = "Готово";
+      status.className = "ok";
+
+      const list = document.getElementById('list');
+      list.innerHTML = "";
+
+      if (items.length === 0) {
+        list.innerHTML = `<div class="muted">Ошибок не найдено. Попробуй skip_first_plies=0 или depth=16.</div>`;
+        return;
+      }
+
+      items.forEach((it, idx) => {
+        const div = document.createElement('div');
+        div.className = "item";
+        div.innerHTML = `
+          <div><b>#${idx+1}</b> ${it.game_id} · ход ${it.move_number} · ${it.color}
+            <span class="pill">${it.label}</span>
+            <span class="pill">drop ${it.drop_cp}</span>
+          </div>
+          <div class="muted">best: <span class="mono">${it.best_uci}</span> · played: <span class="mono">${it.played_uci}</span></div>
+          ${it.before_is_mate ? `<div class="muted">До хода был МАТ в ${it.before_mate_in}</div>` : ``}
+        `;
+        div.onclick = () => selectMistake(it);
+        list.appendChild(div);
+      });
+
+      // авто-выбор первой ошибки
+      selectMistake(items[0]);
+    }
+
+    function onDrop(source, target) {
+      clearResult();
+      if (!current) return "snapback";
+
+      const move = chess.move({ from: source, to: target, promotion: "q" });
+      if (move === null) return "snapback";
+
+      boardUI.position(chess.fen());
+
+      const playedUci = (source + target).toLowerCase();
+      const bestUci = (current.best_uci || "").toLowerCase();
+
+      if (bestUci && playedUci === bestUci) {
+        renderResult("Верно! Это лучший ход.", true);
+      } else {
+        renderResult(`Не лучший. Ты сыграл ${playedUci}, а лучший: ${bestUci || "?"}`, false);
+      }
+    }
+
+    function init() {
+      boardUI = Chessboard('board', {
+        position: 'start',
+        draggable: true,
+        onDrop: onDrop
+      });
+
+      document.getElementById('loadBtn').onclick = () => loadMistakes();
+      document.getElementById('resetBtn').onclick = () => {
+        if (current) selectMistake(current);
+      };
+      document.getElementById('showBestBtn').onclick = () => {
+        if (!current) return;
+        const m = uciToMove(current.best_uci);
+        if (!m) return;
+        chess.move(m);
+        boardUI.position(chess.fen());
+        renderResult(`Показал лучший ход: ${current.best_uci}`, true);
+      };
+      document.getElementById('playMyBtn').onclick = () => {
+        if (!current) return;
+        const m = uciToMove(current.played_uci);
+        if (!m) return;
+        chess.move(m);
+        boardUI.position(chess.fen());
+        renderResult(`Сыграл ход из партии: ${current.played_uci}`, false);
+      };
+    }
+
+    init();
+  </script>
+</body>
+</html>
